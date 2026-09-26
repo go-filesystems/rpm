@@ -7,3 +7,5 @@ require (
 	github.com/klauspost/compress v1.20.1
 	github.com/ulikunitz/xz v0.5.17
 )
+
+require github.com/go-filesystems/cpio v0.5.0

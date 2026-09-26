@@ -33,25 +33,33 @@
 // substantial minority of real packages, whose signature data happens to end
 // 8-aligned already. See nextHeaderOffset and README.md's ablation table.
 //
-// # ⛔⛔ THIS PACKAGE DUPLICATES unarchive's cpio READER
+// # The cpio reader comes from go-filesystems/cpio
 //
-// github.com/go-filesystems/unarchive v0.7.0 already reads newc, crc and odc
-// cpio (cpio.go) and already turns the records into an io/fs.FS with directory
-// synthesis, Stat and ReadLink (indexfs.go). All of it is UNEXPORTED, so this
-// package cannot call it.
+// The payload is a cpio archive and github.com/go-filesystems/cpio parses it. This
+// package used to carry a second copy of that parser -- newc only, about 220 lines --
+// with a notice here saying so and asking for exactly this consolidation. The cost it
+// named was real: a defect fixed in one copy stayed present in the other.
 //
-// cpio.go and the index in fs.go here are therefore a deliberate, smaller copy:
-// newc only, no format sniffing, no trailing-block tolerance, because an RPM
-// payload is always newc and its exact length is known. The duplication is named
-// rather than hidden, and it should be consolidated: export unarchive's
-// record/newIndexFS, or move openCpio plus the index into an unarchive/cpio
-// subpackage, and delete cpio.go and fs.go's index from here.
+// What stays here is the mapping onto this package's entry, the index in fs.go, and
+// posixMode, which is the direction the shared parser does not go. The FILESYSTEM is
+// deliberately not shared: a payload is one compressed stream, so it is in memory and
+// entries are sections of it, while unarchive indexes into a file it keeps open.
 //
-// Until that happens, A DEFECT FIXED IN ONE COPY IS STILL PRESENT IN THE OTHER.
-// One such defect is already recorded in unarchive's own comments: cpioRecord's
-// `next` was returned as zero, so the walk re-read record one for ever and the
-// suite reported a ten-minute TIMEOUT rather than a failure. The equivalent line
-// here is readCpioRecord's nextOff, and the comment on it says so.
+// It calls cpio.RecordsExact rather than cpio.Records. A payload's length is known
+// exactly, so a record that does not parse, a magic that is not one, and a missing
+// trailer are all damage -- not the block padding an initramfs legitimately carries.
+// Records tolerates all three, and using it here turned three of this package's
+// refusals into silent successes, which is how that distinction was found.
+//
+// Two things the consolidation settled, both of them disagreements between the two
+// readers that no test on either side could see:
+//
+//   - the shared parser checks EVERY numeric header field. This package did; the
+//     other ignored the errors on inode and mtime, so a header with a non-hex inode
+//     parsed to inode 0 and looked ordinary.
+//   - the inode is carried, because this package reports it in Stat. It is NOT
+//     portable across cpio variants: odc's field and the old binary variant's are too
+//     narrow to hold a real one, and cpio(1) renumbers them 1..n.
 //
 // # ⚠⚠ WHERE THE WITNESSES COME FROM, AND WHAT THEY CANNOT SHOW
 //
