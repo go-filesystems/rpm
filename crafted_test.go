@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/go-filesystems/cpio"
 	"io"
 	iofs "io/fs"
 	"strings"
@@ -571,19 +572,32 @@ func TestCorruptIndexEntries(t *testing.T) {
 
 func TestCorruptCpio(t *testing.T) {
 	good := buildCpio(demoRecs()...)
-	// Each of the five fields this reader parses, made non-hexadecimal in
-	// turn. The field index is newc's own: 0 ino, 1 mode, 5 mtime, 6 filesize,
-	// 11 namesize.
-	for _, field := range []int{0, 1, 5, 6, 11} {
-		t.Run(fmt.Sprintf("field %d is not hex", field), func(t *testing.T) {
+	// Each numeric field, made non-hexadecimal in turn. The index is newc's own.
+	//
+	// ⛔ The message is expected to name the FIELD rather than its index, which is
+	// what changed when the reader moved to go-filesystems/cpio: "inode at 0" says
+	// what is wrong, "field 0" says where to go and count. The index stays here
+	// because it is how the corruption is applied.
+	//
+	// inode and mtime are in this list and were not checked at all on one side of
+	// the merge: unarchive ignored their parse errors, so a header with a non-hex
+	// inode parsed to inode 0 and looked ordinary. These two cases are why that
+	// came out.
+	for _, f := range []struct {
+		index int
+		named string
+	}{
+		{0, "inode"}, {1, "mode"}, {5, "mtime"}, {6, "size"}, {11, "name size"},
+	} {
+		t.Run(fmt.Sprintf("field %d (%s) is not hex", f.index, f.named), func(t *testing.T) {
 			bad := bytes.Clone(good)
-			copy(bad[6+field*8:], "zzzzzzzz")
+			copy(bad[6+f.index*8:], "zzzzzzzz")
 			_, err := readCpio(bad)
 			if !errors.Is(err, ErrCorrupt) {
 				t.Fatalf("got %v, want ErrCorrupt", err)
 			}
-			if !strings.Contains(err.Error(), fmt.Sprintf("field %d", field)) {
-				t.Errorf("error %q does not name field %d", err, field)
+			if !strings.Contains(err.Error(), f.named) {
+				t.Errorf("error %q does not name the %s field", err, f.named)
 			}
 		})
 	}
@@ -627,7 +641,7 @@ func TestCorruptCpio(t *testing.T) {
 		}
 	})
 	t.Run("the CRC variant is read as newc", func(t *testing.T) {
-		crc := bytes.ReplaceAll(good, []byte(cpioNewc), []byte(cpioCRC))
+		crc := bytes.ReplaceAll(good, []byte(cpio.MagicNewc), []byte(cpio.MagicCRC))
 		entries, err := readCpio(crc)
 		if err != nil {
 			t.Fatalf("070702: %v", err)
@@ -771,3 +785,8 @@ func TestZstdConstructionFailureIsPropagated(t *testing.T) {
 		t.Errorf("error %q does not name the compressor", err)
 	}
 }
+
+// cpioHeaderLen is newc's header, and it lives here because only the tests in this
+// package WRITE cpio: the reader comes from go-filesystems/cpio, which states the
+// padding rule in its own words and has no reason to export an arithmetic constant.
+const cpioHeaderLen = 110

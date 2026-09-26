@@ -76,24 +76,36 @@ also what makes `filesystem.Opener` honest here — the bytes are already
 resident, so a range read costs a copy, and the decoding is accounted for once
 at open instead of hidden inside each read.
 
-## ⛔⛔ This package duplicates `unarchive`'s cpio reader
+## The cpio reader comes from `go-filesystems/cpio`
 
-[`go-filesystems/unarchive`](https://github.com/go-filesystems/unarchive) v0.7.0
-already reads newc, crc and odc cpio, and already turns the records into an
-`io/fs.FS` with directory synthesis, `Stat` and `ReadLink`. **All of it is
-unexported**, so this package cannot call it.
+The payload is a cpio archive and [`go-filesystems/cpio`](https://github.com/go-filesystems/cpio)
+parses it. This package used to carry a **second copy** of that parser — newc only,
+about 220 lines — with a notice here saying so and asking for exactly this
+consolidation. The cost it named was real: *a defect fixed in one copy stayed present
+in the other.*
 
-`cpio.go` and the index in `fs.go` here are therefore a deliberate, smaller
-copy — newc only, no format sniffing, no trailing-block tolerance, because an
-RPM payload is always newc and its exact length is known.
+What stays here is the mapping onto this package's `entry`, the index in `fs.go`, and
+`posixMode`, which is the direction the shared parser does not go. **The filesystem is
+deliberately not shared:** a payload is one compressed stream, so it is in memory and
+entries are sections of it, while `unarchive` indexes into a file it keeps open.
 
-**It should be consolidated.** Export `unarchive`'s `record` / `newIndexFS`, or
-move `openCpio` plus the index into an `unarchive/cpio` subpackage, then delete
-`cpio.go` and `fs.go`'s index from here. Until then a defect fixed in one copy
-is still present in the other — and one such defect is already on record in
-`unarchive`'s own comments (`cpioRecord`'s `next` returned as zero, which
-re-read record one for ever and reported a ten-minute *timeout* rather than a
-failure).
+It calls `cpio.RecordsExact`, not `cpio.Records`. A payload's length is known exactly,
+so a record that does not parse, a magic that is not one, and a missing trailer are all
+**damage** — not the block padding an initramfs legitimately carries. `Records`
+tolerates all three, and using it here turned three of this package's refusals into
+silent successes, which is how that distinction was found.
+
+### Two disagreements the consolidation settled
+
+Neither was visible to any test on either side, because each repository only ever ran
+its own reader.
+
+- **Every numeric header field is checked.** This package did; the other ignored the
+  errors on inode and mtime, so a header with a non-hex inode parsed to `inode 0` and
+  looked perfectly ordinary.
+- **The inode is carried**, because this package reports it in `Stat`. It is **not**
+  portable across cpio variants: odc's field and the old binary variant's are too
+  narrow to hold a real one, and `cpio(1)` renumbers them 1..n.
 
 ## ⚠⚠ Where the witnesses come from, and what that costs in confidence
 

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/go-filesystems/cpio"
 	"io"
 	"strconv"
 	"strings"
@@ -425,7 +426,7 @@ func walkCpioRounding(p []byte, to int64) ([]string, error) {
 	off, size := int64(0), int64(len(p))
 	for off+cpioHeaderLen <= size {
 		h := p[off : off+cpioHeaderLen]
-		if m := string(h[0:6]); m != cpioNewc && m != cpioCRC {
+		if m := string(h[0:6]); m != cpio.MagicNewc && m != cpio.MagicCRC {
 			return names, fmt.Errorf("magic at %d is %q", off, m)
 		}
 		field := func(i int) int64 {
@@ -438,7 +439,7 @@ func walkCpioRounding(p []byte, to int64) ([]string, error) {
 		}
 		name := strings.TrimRight(string(p[off+cpioHeaderLen:off+cpioHeaderLen+nameSize]), "\x00")
 		dataOff := round(off + cpioHeaderLen + nameSize)
-		if name == cpioTrailer {
+		if name == cpio.TrailerName {
 			return names, nil
 		}
 		if dataOff+fileSize > size {

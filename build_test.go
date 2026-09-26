@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
+	"github.com/go-filesystems/cpio"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -218,7 +219,7 @@ func buildCpio(recs ...cpioRec) []byte {
 	for _, r := range recs {
 		write(r)
 	}
-	write(cpioRec{name: cpioTrailer, ino: 0})
+	write(cpioRec{name: cpio.TrailerName, ino: 0})
 	return out.Bytes()
 }
 
