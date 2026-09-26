@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-filesystems/brand/main/social/go-filesystems-rpm.png" alt="go-filesystems/rpm" width="720"></p>
+
 # go-filesystems/rpm
 
 A pure-Go, CGO-free reader for **RPM packages**: the metadata, and the cpio
