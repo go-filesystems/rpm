@@ -1,7 +1,7 @@
-github.com/go-filesystems/cpio v0.5.0 h1:/A9RX9Z7g3fu+iPKIxB39cHJ9TJzReca39fXMZmJCgE=
-github.com/go-filesystems/cpio v0.5.0/go.mod h1:U2GeESYISoGKTeM617p0XLYabNpRL3uGoTUh+VkcBCA=
-github.com/go-filesystems/interface v0.3.0 h1:cV4+2mvW1eCPyde+KIDRaGuIPAcr2sDgKrxGuGQr98k=
-github.com/go-filesystems/interface v0.3.0/go.mod h1:9MDfHNNKg9cW1qBa3hmURQj4jiWIdTo9Xpgdt8ZzvV8=
+github.com/go-filesystems/cpio v0.6.0 h1:nFLxI3gEzssOC7WBr1dzLosbnWH5vLsc8fvnoDTdmBo=
+github.com/go-filesystems/cpio v0.6.0/go.mod h1:dATw/mUHpi1+nmPFhj3pzEUp5KJ36NN4wGR06Cc9fSE=
+github.com/go-filesystems/interface v0.4.0 h1:JAekS0P8ocsFy8knnIZvkKJiifgRw3RKACkL3MQmBd4=
+github.com/go-filesystems/interface v0.4.0/go.mod h1:u9v8mvapNV8djzObwCECdyd2g6JBU6HNTR4EAqxOn6U=
 github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
 github.com/klauspost/compress v1.20.1/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/ulikunitz/xz v0.5.17 h1:flR0y/x1hgM8EGV1AW3Xll6T413G0glV8UfBwR617V4=
