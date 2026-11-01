@@ -32,6 +32,7 @@ body, err := fsys.ReadFile("usr/share/rootfiles/.bashrc")
 ```go
 func Metadata(r io.ReaderAt, size int64) (*Package, error)
 func Open(r io.ReaderAt, size int64) (*FS, error)
+func OpenLimit(r io.ReaderAt, size, maxPayload int64) (*FS, error)
 func OpenReader(r io.ReaderAt, size int64) (filesystem.Filesystem, error)
 ```
 
@@ -59,6 +60,7 @@ in-place write that leaves a valid package behind.
 | `ErrNotFound` | a path the payload does not carry — satisfies `fs.ErrNotExist` |
 | `ErrNotRegular` | the path resolved and is the wrong kind — satisfies `fs.ErrInvalid` |
 | `ErrReadOnly` | every mutating method |
+| `ErrTooLarge` | the package asks for more than the ceilings allow — see *Untrusted input* |
 
 ⛔ `ErrCorrupt` is deliberately **not** wrapped in `fs.ErrNotExist`. A caller
 mapping this onto HTTP or NFS must be able to answer 500 for a damaged package
@@ -77,6 +79,36 @@ Budget for the **installed** size of the package, not its download size. It is
 also what makes `filesystem.Opener` honest here — the bytes are already
 resident, so a range read costs a copy, and the decoding is accounted for once
 at open instead of hidden inside each read.
+
+## Untrusted input
+
+A package is read as hostile; every allocation or loop a header or the payload can
+size is bounded before it happens. Each row was measured on the code before the
+fix (`TotalAlloc` or wall time around the call):
+
+| What the file controls | Before | Bound now |
+|---|---|---|
+| the size the payload inflates to (gzip, bzip2, xz, zstd, none) | 526 630-byte package, 256 MiB file: 1 073 799 504 bytes allocated | `OpenLimit(r, size, maxPayload)`; `Open` = `DefaultMaxPayload` (1 GiB); `ErrTooLarge`, having held at most `maxPayload+1` |
+| a zstd window | 9-byte frame: 537 151 024 bytes | `MaxDecoderWindow` = 128 MiB, libzstd's own default limit |
+| an xz LZMA2 dictionary | 64-byte stream: 536 929 200 bytes (up to 4 GiB declarable) | refused over `MaxDecoderWindow` by reading the first Block Header (see open item below) |
+| a path in the payload | 1 MiB `a/a/a/…` (2 329 bytes of package): `Open` still running after 9 minutes (`path.Dir` per component) | `MaxPathLength` = 4096 (PATH_MAX); parents found by last slash |
+| files in one directory | quadratic (`slices.Contains` per file) | linear |
+| entries, real plus undeclared parent directories | unbounded | `MaxEntries` = 4 194 304, checked in the cpio walk before the list is built (`cpio.RecordsExactLimit`) |
+| `h.Int(tag)`, `h.String(tag)` | 64 Mi INT8 epoch: 603 994 688 bytes; 16 Mi empty strings as NAME: 285 222 360 bytes | first value only, nothing allocated |
+| string walking in a header | 8 arrays × 8 Mi strings over one 8 MiB store: 1.55 s (65 535 arrays over a 100 MB store: days) | total walked ≤ 2× the data store |
+| header counts | 1 Mi entries, 256 MiB | rpm's own `HEADER_TAGS_MAX` 65 535 and `HEADER_DATA_MAX` 0x0fffffff (`lib/header.cc`) |
+| a cpio size field with a sign | `Open` never returned (cpio < v0.7.0) | refused: `go-filesystems/cpio` v0.8.0 |
+
+The memory a successful `Open` holds is the payload plus about 400 bytes per entry,
+so budget a small multiple of `maxPayload`. `FuzzOpen` ran 100 s over the whole
+reader without a finding.
+
+⚠ **Open: the xz guard reads only the first block of the first stream.** The
+`ulikunitz/xz` decoder allocates whatever dictionary a Block Header declares and has
+no ceiling option. A stream whose first block is benign and whose second declares a
+huge dictionary is not caught; neither is a second stream. xz utilities write one
+filter chain for every block, so every package they produce is covered; a hostile
+one is not. Closing it needs a ceiling inside the decoder or a decoder of our own.
 
 ## The cpio reader comes from `go-filesystems/cpio`
 

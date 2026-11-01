@@ -125,6 +125,21 @@ func Metadata(r io.ReaderAt, size int64) (*Package, error) {
 // only wants the name and version should call Metadata, which reads the headers
 // alone.
 func Open(r io.ReaderAt, size int64) (*FS, error) {
+	return OpenLimit(r, size, DefaultMaxPayload)
+}
+
+// OpenLimit is Open with the payload allowed to inflate to maxPayload bytes rather
+// than DefaultMaxPayload; maxPayload <= 0 means the default. A payload that inflates
+// past it is refused with ErrTooLarge, having held at most maxPayload+1 bytes (the
+// buffer may touch twice that while it grows).
+//
+// The memory a successful Open holds is the payload plus an index of its entries,
+// about 400 bytes per entry (MaxEntries caps them), so budget a small multiple of
+// maxPayload.
+func OpenLimit(r io.ReaderAt, size, maxPayload int64) (*FS, error) {
+	if maxPayload <= 0 {
+		maxPayload = DefaultMaxPayload
+	}
 	pkg, err := Metadata(r, size)
 	if err != nil {
 		return nil, err
@@ -139,7 +154,7 @@ func Open(r io.ReaderAt, size int64) (*FS, error) {
 	if pkg.PayloadFormat != "" && pkg.PayloadFormat != PayloadFormatCpio {
 		return nil, fmt.Errorf("rpm: payload format %q: %w", pkg.PayloadFormat, ErrUnsupported)
 	}
-	payload, err := decompressPayload(r, pkg.PayloadOffset, pkg.PayloadSize, pkg.PayloadCompressor)
+	payload, err := decompressPayload(r, pkg.PayloadOffset, pkg.PayloadSize, pkg.PayloadCompressor, maxPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +162,7 @@ func Open(r io.ReaderAt, size int64) (*FS, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newFS(pkg, payload, entries), nil
+	return newFS(pkg, payload, entries)
 }
 
 // OpenReader is Open under the name every driver in go-filesystems answers to.

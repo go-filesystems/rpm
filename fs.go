@@ -53,7 +53,20 @@ func (f *FS) Package() *Package { return f.pkg }
 // to, and a payload holding only "usr/lib/tmpfiles.d/rootfiles.conf" would
 // otherwise have an empty root and be unwalkable. The synthesis runs AFTER the
 // real entries are filed, so a declared directory keeps its own mode and mtime.
-func newFS(pkg *Package, payload []byte, entries []entry) *FS {
+//
+// ⛔ Two costs here were quadratic, both measured on the old code:
+//
+//   - link asked slices.Contains of a directory's children before appending, so N
+//     entries in one directory cost N²/2 string comparisons. It now files a name
+//     only when the name is new, which byName already knows.
+//   - the parent walk called path.Dir on every level, and path.Dir scans the whole
+//     string: a path of D components cost D×length. A cleaned name needs only its
+//     last slash (see dirOf).
+//
+// And the synthesised directories are counted against MaxEntries with the real
+// ones: a path of D new components makes D directories, so a payload of long,
+// pairwise-different paths is an amplifier of the index, not just of the payload.
+func newFS(pkg *Package, payload []byte, entries []entry) (*FS, error) {
 	f := &FS{
 		pkg:     pkg,
 		payload: payload,
@@ -65,27 +78,43 @@ func newFS(pkg *Package, payload []byte, entries []entry) *FS {
 		if e.name == "" || e.name == "." {
 			continue
 		}
+		_, dup := f.byName[e.name]
 		f.byName[e.name] = &e
-		f.link(e.name)
+		if !dup {
+			f.link(e.name)
+		}
 	}
 	for name := range f.byName {
-		for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
+		for dir := dirOf(name); dir != "."; dir = dirOf(dir) {
 			if _, ok := f.byName[dir]; ok {
 				break
+			}
+			if len(f.byName) >= maxEntries {
+				return nil, fmt.Errorf("rpm: payload: more than %d entries, counting the "+
+					"parent directories it leaves undeclared: %w", maxEntries, ErrTooLarge)
 			}
 			f.byName[dir] = &entry{name: dir, mode: iofs.ModeDir | 0o755}
 			f.link(dir)
 		}
 	}
-	return f
+	return f, nil
 }
 
-// link files a name under its parent, once.
-func (f *FS) link(name string) {
-	dir := path.Dir(name)
-	if !slices.Contains(f.kids[dir], name) {
-		f.kids[dir] = append(f.kids[dir], name)
+// dirOf is path.Dir for a name cleanName has produced: relative, no empty
+// component, no "." or "..". Such a name's parent is everything before its last
+// slash, or "." when it has none -- and finding that costs the last component, not
+// the whole name.
+func dirOf(name string) string {
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		return name[:i]
 	}
+	return "."
+}
+
+// link files a name under its parent. Callers file each name once.
+func (f *FS) link(name string) {
+	dir := dirOf(name)
+	f.kids[dir] = append(f.kids[dir], name)
 }
 
 // cleanName is the ONE spelling of a path this index uses, and every lookup goes

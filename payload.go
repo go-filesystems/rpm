@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 
@@ -21,6 +22,29 @@ const (
 	CompressorXz    = "xz"
 	CompressorZstd  = "zstd"
 )
+
+// The ceilings. An RPM is untrusted input and a payload is the one thing in it that
+// is compressed, so what it inflates to is the file's choice unless these say
+// otherwise. Each is a number the format does not fix; the reference each was taken
+// from is named where it is used.
+const (
+	// DefaultMaxPayload is what Open allows a payload to inflate to: 1 GiB, the
+	// installed size of a very large package. OpenLimit takes another.
+	DefaultMaxPayload = 1 << 30
+	// MaxDecoderWindow bounds the memory a compressor may ask for up front: a zstd
+	// window or an xz LZMA2 dictionary. 128 MiB is libzstd's default limit.
+	MaxDecoderWindow = 128 << 20
+	// MaxEntries bounds the entries of the payload, real and synthesised parent
+	// directories together. A real package has hundreds of thousands at most.
+	MaxEntries = 1 << 22
+	// MaxPathLength bounds one entry's path: Linux's PATH_MAX (limits.h), which is
+	// also what the kernel's initramfs unpacker refuses beyond (init/initramfs.c).
+	MaxPathLength = 4096
+)
+
+// maxEntries is MaxEntries, as a variable only so that a test can lower it: a test
+// of the ceiling that needed four million entries would be a test nobody runs.
+var maxEntries = MaxEntries
 
 // PayloadFormatCpio is the only PAYLOADFORMAT this reader opens.
 const PayloadFormatCpio = "cpio"
@@ -61,7 +85,12 @@ func payloadCompressor(h *Header) string {
 // the compressor's name. It does not prove zstd ever fails that way, and no
 // witness in this repository can, because the library does not.
 var newZstdReader = func(r io.Reader) (io.ReadCloser, error) {
-	d, err := zstd.NewReader(r)
+	// ⛔ THE WINDOW IS CAPPED. The library's default is 512 MiB and it allocates the
+	// window up front: measured, a 9-byte frame declaring one made NewReader plus a
+	// read allocate 537 151 024 bytes. 128 MiB is libzstd's own default limit
+	// (zstd.h, ZSTD_WINDOWLOG_LIMIT_DEFAULT = 27), so no frame the reference decoder
+	// accepts by default is refused here.
+	d, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(MaxDecoderWindow))
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +112,14 @@ var newZstdReader = func(r io.Reader) (io.ReadCloser, error) {
 // The cost is the INSTALLED size of the package, not its download size. A caller
 // opening an arbitrary .rpm should budget for that; Metadata reads the headers
 // alone and never calls this.
-func decompressPayload(r io.ReaderAt, off, n int64, compressor string) ([]byte, error) {
+//
+// ⛔ THE OUTPUT IS BOUNDED BY maxOut, which Open sets to DefaultMaxPayload. Without
+// it a few hundred kilobytes of gzip (1000:1) or xz and zstd (far more) inflate to
+// whatever the file chooses: measured, a 526 630-byte package holding a 256 MiB
+// file made Open allocate 1 073 799 504 bytes. The cap is checked on the bytes that
+// actually arrive, one over the limit being enough to refuse, so nothing past
+// maxOut+1 is ever held; bytes.Buffer's doubling can still touch twice that.
+func decompressPayload(r io.ReaderAt, off, n int64, compressor string, maxOut int64) ([]byte, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("rpm: payload at %d has negative length %d: %w", off, n, ErrCorrupt)
 	}
@@ -102,6 +138,9 @@ func decompressPayload(r io.ReaderAt, off, n int64, compressor string) ([]byte, 
 	case CompressorBzip2:
 		zr = bzip2.NewReader(sr)
 	case CompressorXz:
+		if err := checkXZDictionary(sr); err != nil {
+			return nil, err
+		}
 		x, err := xz.NewReader(sr)
 		if err != nil {
 			return nil, fmt.Errorf("rpm: xz payload: %w", err)
@@ -117,9 +156,24 @@ func decompressPayload(r io.ReaderAt, off, n int64, compressor string) ([]byte, 
 	default:
 		return nil, fmt.Errorf("rpm: payload compressor %q: %w", compressor, ErrUnsupported)
 	}
+	// One byte over the ceiling is enough to know it was crossed. A ceiling no int
+	// can hold (maxOut near MaxInt64, or over 2 GiB on a 32-bit target) is clamped
+	// to the largest slice Go can make, so bytes.Buffer never panics on its own.
+	limit := min(maxOut, int64(maxInt)-1)
 	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, zr); err != nil {
+	if _, err := io.Copy(&buf, io.LimitReader(zr, limit+1)); err != nil {
+		if errors.Is(err, zstd.ErrWindowSizeExceeded) {
+			return nil, fmt.Errorf("rpm: the zstd payload wants a window over %d bytes: %w: %w",
+				MaxDecoderWindow, ErrTooLarge, err)
+		}
 		return nil, fmt.Errorf("rpm: decompressing the %s payload: %w", compressor, err)
+	}
+	if int64(buf.Len()) > limit {
+		return nil, fmt.Errorf("rpm: the %s payload inflates past %d bytes: %w",
+			compressor, limit, ErrTooLarge)
 	}
 	return buf.Bytes(), nil
 }
+
+// maxInt is the largest int, which is what bytes.Buffer can hold.
+const maxInt = int(^uint(0) >> 1)

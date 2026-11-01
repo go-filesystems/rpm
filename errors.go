@@ -32,6 +32,14 @@ var ErrCorrupt = errors.New("rpm: corrupt package")
 // or a compressor that is not one of the five named in PAYLOADCOMPRESSOR.
 var ErrUnsupported = errors.New("rpm: unsupported")
 
+// ErrTooLarge is returned when a package asks for more memory than the ceilings
+// allow: a payload that inflates past the limit given to OpenLimit (a compression
+// bomb is a few hundred kilobytes of file for gigabytes of payload), a compressor
+// window or dictionary over MaxDecoderWindow, more entries than MaxEntries, or a
+// path longer than MaxPathLength. The package may be a well-formed one that this
+// reader declines to hold; it is not ErrCorrupt.
+var ErrTooLarge = errors.New("rpm: over the size ceiling")
+
 // ErrNotFound is the driver's single "that path is not in this package"
 // sentinel, and it satisfies the interface module's error contract:
 // errors.Is(err, fs.ErrNotExist) is true for it and for anything wrapping it.

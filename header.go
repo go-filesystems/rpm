@@ -22,13 +22,16 @@ const headerPrefix = 16
 const indexEntrySize = 16
 
 // maxIndex and maxData bound what this reader will allocate for one header
-// before deciding the counts are not credible. rpm's own limits are 64 MiB of
-// data and 64 Ki entries per header (HEADER_DATA_MAX / hdrblobRead); these are
-// generous against that and stop a truncated or hostile file from asking for
-// gigabytes on the strength of two u32s.
+// before deciding the counts are not credible. They are rpm's own limits, read from
+// its source (lib/header.cc: HEADER_TAGS_MAX 0x0000ffff, HEADER_DATA_MAX
+// 0x0fffffff, enforced on a header's counts by hdrblobInit): a header rpm itself
+// refuses is refused here, and nothing rpm accepts is.
+//
+// They used to be 1<<20 and 1<<28, "generous against" those. The generosity cost
+// 16 times the entries rpm allows, each of which is a map slot.
 const (
-	maxIndex = 1 << 20
-	maxData  = 1 << 28
+	maxIndex = 0xffff
+	maxData  = 0x0fffffff
 )
 
 // Type is an index entry's value type, as stored in the entry's second u32.
@@ -78,6 +81,10 @@ type Header struct {
 
 	byTag map[uint32]Entry
 	data  []byte
+
+	// scan is what is left of the budget of bytes check() may walk across all the
+	// entries together; see check.
+	scan int64
 }
 
 // readHeader parses the header structure whose magic sits at off.
@@ -124,6 +131,14 @@ func readHeader(r io.ReaderAt, size, off int64, what string) (*Header, error) {
 		byTag:   make(map[uint32]Entry, nindex),
 		data:    body[idxLen:],
 	}
+	// ⛔ rpm requires one entry's data not to overlap the previous entry's
+	// (hdrblobVerifyInfo: "Previous data must not overlap"), so the strings of all
+	// the entries together cannot span more than the data store. This reader does
+	// not enforce the ordering -- it never relied on it -- and without it each
+	// entry could count the same strings again: 65 535 string arrays of 100 million
+	// empty strings over one 100 MB store is 6.5 trillion steps from a 100 MB file.
+	// So the TOTAL walked is capped at a small multiple of the store instead.
+	h.scan = 2 * int64(len(h.data))
 	for i := range int64(nindex) {
 		raw := body[i*indexEntrySize:]
 		e := Entry{
@@ -190,6 +205,9 @@ func (h *Header) check(e Entry, what string) error {
 				return fail("has an unterminated string")
 			}
 			rest = rest[i+1:]
+			if h.scan -= int64(i + 1); h.scan < 0 {
+				return fail("walks more of the data store than the header's entries can share")
+			}
 		}
 		return nil
 	default:
@@ -248,12 +266,26 @@ func (h *Header) Lookup(tag uint32) (Entry, bool) {
 // mean the same thing to a caller (no summary, no license, no compressor named).
 // The one tag where that is false -- PAYLOADCOMPRESSOR, whose absence means gzip
 // and not "no compression" -- is read through Has first. See payloadCompressor.
+//
+// ⛔ It reads the FIRST string and builds nothing else. It used to call Strings and
+// take element 0, which allocates a slice of Count strings: 16 bytes each, for a
+// header whose store is 256 MiB of NULs, is 4 GiB to return one empty string -- and
+// Metadata calls this for fifteen tags. Measured on the old code: a 16 MiB package
+// whose NAME was a STRING_ARRAY of 16 Mi empty strings made Metadata allocate
+// 268 MB.
 func (h *Header) String(tag uint32) string {
-	s := h.Strings(tag)
-	if len(s) == 0 {
+	e, ok := h.byTag[tag]
+	if !ok || e.Count == 0 {
 		return ""
 	}
-	return s[0]
+	switch e.Type {
+	case TypeString, TypeI18NString, TypeStringArray:
+	default:
+		return ""
+	}
+	rest := h.data[e.Offset:]
+	// check() proved the terminator is there for the first of Count >= 1 strings.
+	return string(rest[:bytes.IndexByte(rest, 0)])
 }
 
 // Strings returns every string stored under tag. A STRING or I18NSTRING yields
@@ -287,46 +319,63 @@ func (h *Header) Ints(tag uint32) []int64 {
 	if !ok {
 		return nil
 	}
-	var width int
-	switch e.Type {
-	case TypeChar, TypeInt8:
-		width = 1
-	case TypeInt16:
-		width = 2
-	case TypeInt32:
-		width = 4
-	case TypeInt64:
-		width = 8
-	default:
+	width := intWidth(e.Type)
+	if width == 0 {
 		return nil
 	}
 	rest := h.data[e.Offset:]
 	out := make([]int64, 0, e.Count)
 	for i := range int(e.Count) {
-		b := rest[i*width : (i+1)*width]
-		var v int64
-		switch width {
-		case 1:
-			v = int64(int8(b[0]))
-		case 2:
-			v = int64(int16(binary.BigEndian.Uint16(b)))
-		case 4:
-			v = int64(int32(binary.BigEndian.Uint32(b)))
-		default:
-			v = int64(binary.BigEndian.Uint64(b))
-		}
-		out = append(out, v)
+		out = append(out, decodeInt(rest[i*width:], width))
 	}
 	return out
 }
 
 // Int returns the first integer stored under tag, and whether there was one.
+//
+// ⛔ Like String it reads the first value and builds no slice: Ints widens every
+// value to 8 bytes, so an INT8 entry of 256 Mi values would be 2 GiB to answer
+// "what is the epoch".
 func (h *Header) Int(tag uint32) (int64, bool) {
-	v := h.Ints(tag)
-	if len(v) == 0 {
+	e, ok := h.byTag[tag]
+	if !ok || e.Count == 0 {
 		return 0, false
 	}
-	return v[0], true
+	width := intWidth(e.Type)
+	if width == 0 {
+		return 0, false
+	}
+	return decodeInt(h.data[e.Offset:], width), true
+}
+
+// intWidth is the byte width of an integer type, or 0 for a type that is not one.
+// CHAR and INT8 count as integers; BIN does not.
+func intWidth(t Type) int {
+	switch t {
+	case TypeChar, TypeInt8:
+		return 1
+	case TypeInt16:
+		return 2
+	case TypeInt32:
+		return 4
+	case TypeInt64:
+		return 8
+	}
+	return 0
+}
+
+// decodeInt reads one big-endian signed value of the given width from the front of
+// b, widened to int64.
+func decodeInt(b []byte, width int) int64 {
+	switch width {
+	case 1:
+		return int64(int8(b[0]))
+	case 2:
+		return int64(int16(binary.BigEndian.Uint16(b)))
+	case 4:
+		return int64(int32(binary.BigEndian.Uint32(b)))
+	}
+	return int64(binary.BigEndian.Uint64(b))
 }
 
 // Bytes returns the raw value stored under a BIN or CHAR tag -- a digest, a
