@@ -90,7 +90,7 @@ fix (`TotalAlloc` or wall time around the call):
 |---|---|---|
 | the size the payload inflates to (gzip, bzip2, xz, zstd, none) | 526 630-byte package, 256 MiB file: 1 073 799 504 bytes allocated | `OpenLimit(r, size, maxPayload)`; `Open` = `DefaultMaxPayload` (1 GiB); `ErrTooLarge`, having held at most `maxPayload+1` |
 | a zstd window | 9-byte frame: 537 151 024 bytes | `MaxDecoderWindow` = 128 MiB, libzstd's own default limit |
-| an xz LZMA2 dictionary | 64-byte stream: 536 929 200 bytes (up to 4 GiB declarable) | refused over `MaxDecoderWindow` by reading the first Block Header (see open item below) |
+| an xz LZMA2 dictionary | `ulikunitz/xz`: 44-byte stream declaring 1.5 GiB: 1 610 663 976 bytes allocated (up to 4 GiB declarable) | `go-compressions/xz`: the window grows with the data decoded, so the same stream allocates 38 064 bytes in all of `Open`; a window that would pass `MaxDecoderWindow` (128 MiB) is refused before it is allocated, in any block of any stream: `ErrTooLarge` |
 | a path in the payload | 1 MiB `a/a/a/…` (2 329 bytes of package): `Open` still running after 9 minutes (`path.Dir` per component) | `MaxPathLength` = 4096 (PATH_MAX); parents found by last slash |
 | files in one directory | quadratic (`slices.Contains` per file) | linear |
 | entries, real plus undeclared parent directories | unbounded | `MaxEntries` = 4 194 304, checked in the cpio walk before the list is built (`cpio.RecordsExactLimit`) |
@@ -103,12 +103,17 @@ The memory a successful `Open` holds is the payload plus about 400 bytes per ent
 so budget a small multiple of `maxPayload`. `FuzzOpen` ran 100 s over the whole
 reader without a finding.
 
-⚠ **Open: the xz guard reads only the first block of the first stream.** The
-`ulikunitz/xz` decoder allocates whatever dictionary a Block Header declares and has
-no ceiling option. A stream whose first block is benign and whose second declares a
-huge dictionary is not caught; neither is a second stream. xz utilities write one
-filter chain for every block, so every package they produce is covered; a hostile
-one is not. Closing it needs a ceiling inside the decoder or a decoder of our own.
+The xz payload is decoded by [`go-compressions/xz`](https://github.com/go-compressions/xz),
+configured with `MaxDictionary` = `MaxDecoderWindow`. A Block Header's dictionary size
+is a claim the decoder never allocates from: the window starts at 16 KiB and doubles
+as output arrives, so only data that fills a window over the ceiling is refused
+(`ErrTooLarge`, wrapping `xz.ErrTooLarge`), not a header that merely declares one. This
+replaces a guard that read the first Block Header of the first stream only, which a
+second block or a second stream walked around; the ceiling now sits in the decoder and
+covers every block. `ulikunitz/xz` is no longer used to read anything; it remains a
+test-only dependency, to write the xz fixtures. The bound is tested with a planted
+bomb (`TestAnXZDictionaryBombAllocatesNothing`), which CI runs as a compiled binary
+under `ulimit -v` and `GOMEMLIMIT`.
 
 ## The cpio reader comes from `go-filesystems/cpio`
 

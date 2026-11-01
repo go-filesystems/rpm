@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-compressions/xz"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -126,72 +127,137 @@ func xzStream(block []byte) []byte {
 
 func lzma2(bits byte) []byte { return []byte{0x21, 0x01, bits} }
 
-var deltaFilter = []byte{0x03, 0x01, 0x00}
-
-// TestTheXZDictionaryCeilingIsExact: bits 30 is 2<<26 = 128 MiB, the ceiling; bits
-// 31 is 3<<26 = 192 MiB. The decoder is never reached: the stream ends at the Block
-// Header, and the guard decides on that alone.
-func TestTheXZDictionaryCeilingIsExact(t *testing.T) {
-	check := func(name string, stream []byte, want error) {
-		t.Helper()
-		err := checkXZDictionary(bytes.NewReader(stream))
-		if !errors.Is(err, want) {
-			t.Errorf("%s: %v, want %v", name, err, want)
-		}
-	}
-	check("at the ceiling", xzStream(xzBlockHeader(false, false, lzma2(30))), nil)
-	check("one step over", xzStream(xzBlockHeader(false, false, lzma2(31))), ErrTooLarge)
-	check("4 GiB", xzStream(xzBlockHeader(false, false, lzma2(40))), ErrTooLarge)
-	check("past 4 GiB: the library's refusal", xzStream(xzBlockHeader(false, false, lzma2(41))), nil)
-	check("reserved bits are masked off", xzStream(xzBlockHeader(false, false, lzma2(0xC0|30))), nil)
-	check("with both sizes present", xzStream(xzBlockHeader(true, true, lzma2(31))), ErrTooLarge)
-	check("behind another filter", xzStream(xzBlockHeader(false, false, deltaFilter, lzma2(31))), ErrTooLarge)
-	check("small dictionary behind another filter", xzStream(xzBlockHeader(false, false, deltaFilter, lzma2(10))), nil)
-	check("LZMA2 with the wrong property length is not one", xzStream(xzBlockHeader(false, false, []byte{0x21, 0x02, 0x1f, 0x00})), nil)
-
-	hdr := xzBlockHeader(false, false, lzma2(31))
-	for name, stream := range map[string][]byte{
-		"empty":                       nil,
-		"the stream header alone":     xzStream(nil),
-		"not xz":                      append([]byte("PK\x03\x04 not an xz stream at all"), hdr...),
-		"no block (index indicator)":  xzStream([]byte{0x00, 0x00, 0x00, 0x00, 0x00}),
-		"header longer than the data": xzStream(append([]byte{0xFF}, hdr[1:]...)),
-		"unterminated compressed size": xzStream(func() []byte {
-			h := xzBlockHeader(true, false, lzma2(31))
-			for i := 2; i < len(h)-4; i++ {
-				h[i] = 0x80 // the varint never ends
-			}
-			return h
-		}()),
-		"unterminated filter id": xzStream(func() []byte {
-			h := xzBlockHeader(false, false, lzma2(31))
-			for i := 2; i < len(h)-4; i++ {
-				h[i] = 0x80
-			}
-			return h
-		}()),
-		"missing property size": xzStream(func() []byte {
-			h := xzBlockHeader(false, false, []byte{0x21})
-			h[len(h)-5] = 0x80 // a lone continuation byte where the size should be
-			return h
-		}()),
-		"property size larger than the header": xzStream(xzBlockHeader(false, false, []byte{0x21, 0x7f})),
-	} {
-		check(name, stream, nil)
-	}
+// xzBlockSpec is one block of a stream built by xzValid: the LZMA2 dictionary
+// property its header declares, and the bytes it stores.
+type xzBlockSpec struct {
+	prop byte
+	data []byte
 }
 
-func TestAnXZDictionaryBombIsRefusedBeforeItIsAllocated(t *testing.T) {
+// xzStored wraps data in LZMA2 uncompressed chunks and the 0x00 end marker
+// (xz-file-format.txt, 5.3.1; no encoder needed).
+func xzStored(data []byte) []byte {
+	var out []byte
+	first := true
+	for len(data) > 0 {
+		n := min(len(data), 1<<16)
+		ctl := byte(2) // uncompressed chunk, no dictionary reset
+		if first {
+			ctl, first = 1, false // uncompressed chunk, dictionary reset
+		}
+		out = append(out, ctl, byte((n-1)>>8), byte(n-1))
+		out = append(out, data[:n]...)
+		data = data[n:]
+	}
+	return append(out, 0)
+}
+
+// xzValid builds a complete, valid .xz stream (CRC32 check) of the blocks: header
+// and footer, Block Headers without sizes, Index. Valid streams that declare a
+// dictionary of any size over a few bytes are the bombs.
+func xzValid(blocks ...xzBlockSpec) []byte {
+	out := xzStream(nil)
+	index := []byte{0x00}
+	index = binary.AppendUvarint(index, uint64(len(blocks)))
+	for _, b := range blocks {
+		hdr := xzBlockHeader(false, false, lzma2(b.prop))
+		blk := append(hdr, xzStored(b.data)...)
+		unpadded := uint64(len(blk)) + 4
+		for len(blk)%4 != 0 {
+			blk = append(blk, 0)
+		}
+		blk = binary.LittleEndian.AppendUint32(blk, crc32.ChecksumIEEE(b.data))
+		out = append(out, blk...)
+		index = binary.AppendUvarint(index, unpadded)
+		index = binary.AppendUvarint(index, uint64(len(b.data)))
+	}
+	for len(index)%4 != 0 {
+		index = append(index, 0)
+	}
+	index = binary.LittleEndian.AppendUint32(index, crc32.ChecksumIEEE(index))
+	out = append(out, index...)
+	footer := binary.LittleEndian.AppendUint32(nil, uint32(len(index)/4-1))
+	footer = append(footer, 0x00, 0x01)
+	out = binary.LittleEndian.AppendUint32(out, crc32.ChecksumIEEE(footer))
+	return append(append(out, footer...), 'Y', 'Z')
+}
+
+// TestAnXZDictionaryBombAllocatesNothing: a valid package whose payload declares an
+// LZMA2 dictionary of 1 GiB, 1.5 GiB or 4 GiB - 1 over a few bytes. Measured before
+// (ulikunitz/xz v0.5.17, a 44-byte stream declaring 1.5 GiB): 1 610 663 976 bytes
+// allocated. go-compressions/xz sizes the window by the data decoded.
+func TestAnXZDictionaryBombAllocatesNothing(t *testing.T) {
+	cpio := demoSpec(CompressorXz).payload
+	for _, prop := range []byte{36, 37, 40} {
+		s := demoSpec(CompressorXz)
+		s.rawPayload = xzValid(xzBlockSpec{prop, cpio})
+		pkg := s.build(t)
+		var err error
+		got := allocated(func() { _, err = openBytes(pkg, DefaultMaxPayload) })
+		if err != nil {
+			t.Fatalf("prop %d: Open = %v, want it to decode", prop, err)
+		}
+		t.Logf("prop %d: %d bytes allocated by Open", prop, got)
+		if got > 1<<20 {
+			t.Errorf("prop %d: %d bytes allocated", prop, got)
+		}
+	}
+	// A bare header with no data is refused as corrupt, still without allocating.
 	s := demoSpec(CompressorXz)
-	s.rawPayload = xzStream(xzBlockHeader(false, false, lzma2(31)))
+	s.rawPayload = xzStream(xzBlockHeader(false, false, lzma2(40)))
 	pkg := s.build(t)
 	var err error
 	got := allocated(func() { _, err = openBytes(pkg, DefaultMaxPayload) })
-	if !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("Open = %v, want ErrTooLarge", err)
+	if !errors.Is(err, xz.ErrTruncated) || errors.Is(err, ErrTooLarge) {
+		t.Errorf("a header alone: %v, want the library's ErrTruncated", err)
 	}
 	if got > 1<<20 {
-		t.Errorf("%d bytes allocated", got)
+		t.Errorf("a header alone: %d bytes allocated", got)
+	}
+}
+
+// TestTheXZDictionaryCeilingIsExact: the window grows with the data and stops at
+// the ceiling, whatever the header declares. The ceiling is lowered for the test
+// (xzMaxDictionary) so that no test needs 128 MiB of output.
+func TestTheXZDictionaryCeilingIsExact(t *testing.T) {
+	defer func(old int) { xzMaxDictionary = old }(xzMaxDictionary)
+	data := bytes.Repeat([]byte("0123456789abcdef"), 1<<14) // 256 KiB
+	for _, prop := range []byte{40, 18} {                  // 4 GiB - 1, and 2 MiB
+		stream := xzValid(xzBlockSpec{prop, data})
+		decode := func(ceiling int) ([]byte, error) {
+			xzMaxDictionary = ceiling
+			return decompressPayload(bytes.NewReader(stream), 0, int64(len(stream)), CompressorXz, DefaultMaxPayload)
+		}
+		got, err := decode(len(data))
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("prop %d, a ceiling of exactly the data: %v", prop, err)
+		}
+		_, err = decode(len(data) - 1)
+		if !errors.Is(err, ErrTooLarge) || errors.Is(err, ErrCorrupt) {
+			t.Fatalf("prop %d, one byte under: %v, want ErrTooLarge", prop, err)
+		}
+		if !errors.Is(err, xz.ErrTooLarge) {
+			t.Errorf("prop %d: %v does not wrap the library's error", prop, err)
+		}
+	}
+}
+
+// TestAnXZBombInALaterBlockOrStreamIsRefused: the guard this replaced read the first
+// Block Header of the first stream only. The ceiling is in the decoder now, so a
+// benign first block, or a benign first stream, protects nothing.
+func TestAnXZBombInALaterBlockOrStreamIsRefused(t *testing.T) {
+	defer func(old int) { xzMaxDictionary = old }(xzMaxDictionary)
+	xzMaxDictionary = 1 << 20
+	benign := xzBlockSpec{18, []byte("small")}
+	big := xzBlockSpec{40, bytes.Repeat([]byte{7}, 3<<20)}
+	for name, stream := range map[string][]byte{
+		"second block":  xzValid(benign, big),
+		"second stream": append(xzValid(benign), xzValid(big)...),
+	} {
+		_, err := decompressPayload(bytes.NewReader(stream), 0, int64(len(stream)), CompressorXz, DefaultMaxPayload)
+		if !errors.Is(err, ErrTooLarge) {
+			t.Errorf("%s: %v, want ErrTooLarge", name, err)
+		}
 	}
 }
 

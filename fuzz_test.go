@@ -28,6 +28,7 @@ func FuzzOpen(f *testing.F) {
 		f.Add(s.build(&testing.T{}))
 	}
 	f.Add(xzStream(xzBlockHeader(false, false, lzma2(31))))
+	f.Add(xzValid(xzBlockSpec{40, []byte("planted: a 4 GiB dictionary over a few bytes")}))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if _, err := Metadata(bytes.NewReader(b), int64(len(b))); err != nil && len(err.Error()) > 4096 {
 			t.Fatalf("an error of %d bytes", len(err.Error()))
