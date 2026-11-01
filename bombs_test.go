@@ -414,30 +414,25 @@ func TestTheEntryCeilingCountsParentDirectories(t *testing.T) {
 }
 
 // TestAWideDirectoryIsLinear: indexing N files in one directory used to cost N²/2
-// string comparisons. The test compares the time for N with the time for 4N and
-// not against a number of seconds, so a slow machine does not fail it: linear is
-// about 4x, quadratic about 16x.
+// string comparisons. 200 000 of them take about 20 ms now and would take about
+// 20 s with the scan (2 x 10^10 comparisons), so a bound of 5 s tells the two apart
+// by a factor of 250 either way and does not depend on the machine being quick.
+// (A ratio of the times for N and 4N was tried first and was too noisy: 4 to 7 for
+// linear code under load, against 16 for quadratic.)
 func TestAWideDirectoryIsLinear(t *testing.T) {
-	timeIt := func(n int) time.Duration {
-		entries := make([]entry, n)
-		for i := range entries {
-			entries[i] = entry{name: fmt.Sprintf("d/f%d", i), mode: 0o100644}
-		}
-		best := time.Hour
-		for range 3 {
-			d := time.Now()
-			if _, err := newFS(&Package{}, nil, entries); err != nil {
-				t.Fatal(err)
-			}
-			best = min(best, time.Since(d))
-		}
-		return best
+	const n = 200000
+	entries := make([]entry, n)
+	for i := range entries {
+		entries[i] = entry{name: fmt.Sprintf("d/f%d", i), mode: 0o100644}
 	}
-	small, large := timeIt(20000), timeIt(80000)
-	ratio := float64(large) / float64(small)
-	t.Logf("20 000 entries: %v, 80 000: %v, ratio %.1f", small, large, ratio)
-	if ratio > 10 {
-		t.Errorf("4x the entries took %.1fx the time: the index is not linear", ratio)
+	d := time.Now()
+	if _, err := newFS(&Package{}, nil, entries); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(d)
+	t.Logf("%d entries in one directory: %v", n, took)
+	if took > 5*time.Second {
+		t.Errorf("%d entries took %v: the index is not linear", n, took)
 	}
 }
 
