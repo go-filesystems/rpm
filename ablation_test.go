@@ -278,7 +278,7 @@ func TestCompressorDispatchAblation(t *testing.T) {
 			if c == w.compressor {
 				continue
 			}
-			raw, derr := decompressPayload(r, p.PayloadOffset, p.PayloadSize, c)
+			raw, derr := decompressPayload(r, p.PayloadOffset, p.PayloadSize, c, DefaultMaxPayload)
 			if derr != nil {
 				continue // the decompressor refused it: the rule bites
 			}
@@ -391,7 +391,7 @@ func TestCpioPaddingAblation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", w.file, err)
 		}
-		raw, err := decompressPayload(r, p.PayloadOffset, p.PayloadSize, p.PayloadCompressor)
+		raw, err := decompressPayload(r, p.PayloadOffset, p.PayloadSize, p.PayloadCompressor, DefaultMaxPayload)
 		if err != nil {
 			t.Fatalf("%s: %v", w.file, err)
 		}

@@ -658,25 +658,25 @@ func TestDecompressPayloadFailures(t *testing.T) {
 	garbage := []byte("this is not a compressed stream at all, not even nearly")
 	r := bytes.NewReader(garbage)
 	for _, c := range []string{CompressorGzip, CompressorXz, CompressorZstd} {
-		if _, err := decompressPayload(r, 0, int64(len(garbage)), c); err == nil {
+		if _, err := decompressPayload(r, 0, int64(len(garbage)), c, DefaultMaxPayload); err == nil {
 			t.Errorf("%s accepted garbage", c)
 		}
 	}
 	// bzip2 has no header check at construction: it fails during the copy.
-	if _, err := decompressPayload(r, 0, int64(len(garbage)), CompressorBzip2); err == nil {
+	if _, err := decompressPayload(r, 0, int64(len(garbage)), CompressorBzip2, DefaultMaxPayload); err == nil {
 		t.Error("bzip2 accepted garbage")
 	}
 	// A valid stream cut in half fails during the copy rather than at open.
 	full := compressWith(t, CompressorGzip, buildCpio(demoRecs()...))
 	half := full[:len(full)/2]
-	if _, err := decompressPayload(bytes.NewReader(half), 0, int64(len(half)), CompressorGzip); err == nil {
+	if _, err := decompressPayload(bytes.NewReader(half), 0, int64(len(half)), CompressorGzip, DefaultMaxPayload); err == nil {
 		t.Error("a truncated gzip stream was accepted")
 	}
 	// An unknown compressor, and a negative length.
-	if _, err := decompressPayload(r, 0, int64(len(garbage)), "lz4"); !errors.Is(err, ErrUnsupported) {
+	if _, err := decompressPayload(r, 0, int64(len(garbage)), "lz4", DefaultMaxPayload); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("an unknown compressor gave %v, want ErrUnsupported", err)
 	}
-	if _, err := decompressPayload(r, 0, -1, CompressorNone); !errors.Is(err, ErrCorrupt) {
+	if _, err := decompressPayload(r, 0, -1, CompressorNone, DefaultMaxPayload); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("a negative payload length gave %v, want ErrCorrupt", err)
 	}
 }
@@ -777,7 +777,7 @@ func TestZstdConstructionFailureIsPropagated(t *testing.T) {
 	t.Cleanup(func() { newZstdReader = saved })
 	sentinel := errors.New("injected zstd option failure")
 	newZstdReader = func(io.Reader) (io.ReadCloser, error) { return nil, sentinel }
-	_, err := decompressPayload(bytes.NewReader([]byte("x")), 0, 1, CompressorZstd)
+	_, err := decompressPayload(bytes.NewReader([]byte("x")), 0, 1, CompressorZstd, DefaultMaxPayload)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("got %v, want the injected error", err)
 	}

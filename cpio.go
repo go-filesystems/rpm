@@ -4,6 +4,7 @@ package rpm
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	iofs "io/fs"
 
@@ -60,7 +61,13 @@ type entry struct {
 // needed. unarchive hands the parser a file it keeps open instead, and that
 // difference is why the two share the parser and not a filesystem.
 func readCpio(payload []byte) ([]entry, error) {
-	recs, err := cpio.RecordsExact(bytes.NewReader(payload), int64(len(payload)))
+	// ⛔ BOUNDED BEFORE THE LIST IS BUILT. A record costs about 100 bytes and the
+	// smallest is 28 bytes of archive, so a payload of tiny records, which gzip
+	// shrinks to nothing, would otherwise become 3.8 GB of Records per GiB inflated.
+	recs, err := cpio.RecordsExactLimit(bytes.NewReader(payload), int64(len(payload)), maxEntries)
+	if errors.Is(err, cpio.ErrTooLarge) {
+		return nil, fmt.Errorf("rpm: payload: %s: %w", err, ErrTooLarge)
+	}
 	if err != nil {
 		// ⛔ EVERY error becomes ErrCorrupt, not only the parser's two sentinels.
 		// The reader here is a bytes.Reader over a payload already in memory, so a
@@ -74,6 +81,15 @@ func readCpio(payload []byte) ([]entry, error) {
 	}
 	out := make([]entry, 0, len(recs))
 	for _, r := range recs {
+		// ⛔ A path is bounded because newFS makes one directory per component it
+		// does not find: a 1 MiB name of "a/a/a/..." is 500 000 of them, from a
+		// package that gzips to about a kilobyte. Measured on the old code: Open of
+		// such a package had not returned after nine minutes (path.Dir re-scanned the
+		// whole name once per component).
+		if len(r.Name) > MaxPathLength {
+			return nil, fmt.Errorf("rpm: payload: a path of %d bytes is over the %d ceiling: %w",
+				len(r.Name), MaxPathLength, ErrTooLarge)
+		}
 		out = append(out, entry{
 			name: cleanName(r.Name),
 			mode: r.Mode,
