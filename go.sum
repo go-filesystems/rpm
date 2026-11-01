@@ -1,5 +1,5 @@
-github.com/go-compressions/xz v0.1.0 h1:uBcHmr/IXwk5mNnuOIz4E2rU3aNl9mVOwIQjMgPy0g8=
-github.com/go-compressions/xz v0.1.0/go.mod h1:ZbYM2CbKR8SZzq6rqhqlWFnBaXrNhWwQyTSslnYQ0FU=
+github.com/go-compressions/xz v0.2.0 h1:RaJf+T22uhuXjqAfNlmg4kFdO8BATsIxatrPJcLRpbw=
+github.com/go-compressions/xz v0.2.0/go.mod h1:ZbYM2CbKR8SZzq6rqhqlWFnBaXrNhWwQyTSslnYQ0FU=
 github.com/go-filesystems/cpio v0.8.0 h1:uGS2k0mcTB/k3fqRvF7BRDhueWbwke681fB33cBHQD0=
 github.com/go-filesystems/cpio v0.8.0/go.mod h1:dATw/mUHpi1+nmPFhj3pzEUp5KJ36NN4wGR06Cc9fSE=
 github.com/go-filesystems/interface v0.5.0 h1:AsbSXYG5cp497Ki0Ez88s8wwrVEmeRmFLd40T4d3UwA=
