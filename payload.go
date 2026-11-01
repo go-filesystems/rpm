@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/go-compressions/xz"
 	"github.com/klauspost/compress/zstd"
-	"github.com/ulikunitz/xz"
 )
 
 // The five values rpm writes into PAYLOADCOMPRESSOR.
@@ -45,6 +45,10 @@ const (
 // maxEntries is MaxEntries, as a variable only so that a test can lower it: a test
 // of the ceiling that needed four million entries would be a test nobody runs.
 var maxEntries = MaxEntries
+
+// xzMaxDictionary is MaxDecoderWindow, as a variable only so that a test can lower it:
+// proving the xz ceiling exact at 128 MiB would need 128 MiB of output.
+var xzMaxDictionary = MaxDecoderWindow
 
 // PayloadFormatCpio is the only PAYLOADFORMAT this reader opens.
 const PayloadFormatCpio = "cpio"
@@ -138,12 +142,14 @@ func decompressPayload(r io.ReaderAt, off, n int64, compressor string, maxOut in
 	case CompressorBzip2:
 		zr = bzip2.NewReader(sr)
 	case CompressorXz:
-		if err := checkXZDictionary(sr); err != nil {
-			return nil, err
-		}
-		x, err := xz.NewReader(sr)
+		// ⛔ THE DICTIONARY FOLLOWS THE OUTPUT. go-compressions/xz grows the LZMA2
+		// window with the data decoded and refuses, with xz.ErrTooLarge and before
+		// allocating, a window that would pass MaxDecoderWindow -- in any block of
+		// any stream. (ulikunitz/xz allocated the dictionary a Block Header
+		// declared, up to 4 GiB, and had no ceiling.)
+		x, err := xz.ReaderConfig{MaxDictionary: xzMaxDictionary}.NewReader(sr)
 		if err != nil {
-			return nil, fmt.Errorf("rpm: xz payload: %w", err)
+			return nil, xzError(err)
 		}
 		zr = x
 	case CompressorZstd:
@@ -166,6 +172,9 @@ func decompressPayload(r io.ReaderAt, off, n int64, compressor string, maxOut in
 			return nil, fmt.Errorf("rpm: the zstd payload wants a window over %d bytes: %w: %w",
 				MaxDecoderWindow, ErrTooLarge, err)
 		}
+		if compressor == CompressorXz {
+			return nil, xzError(err)
+		}
 		return nil, fmt.Errorf("rpm: decompressing the %s payload: %w", compressor, err)
 	}
 	if int64(buf.Len()) > limit {
@@ -173,6 +182,16 @@ func decompressPayload(r io.ReaderAt, off, n int64, compressor string, maxOut in
 			compressor, limit, ErrTooLarge)
 	}
 	return buf.Bytes(), nil
+}
+
+// xzError names an xz failure, keeping the refusal callers have always seen for a
+// dictionary over MaxDecoderWindow: ErrTooLarge, wrapping the library's error.
+func xzError(err error) error {
+	if errors.Is(err, xz.ErrTooLarge) {
+		return fmt.Errorf("rpm: the xz payload wants a dictionary over %d bytes: %w: %w",
+			MaxDecoderWindow, ErrTooLarge, err)
+	}
+	return fmt.Errorf("rpm: xz payload: %w", err)
 }
 
 // maxInt is the largest int, which is what bytes.Buffer can hold.

@@ -29,6 +29,21 @@ jobs:
           if go tool cover -func=cov.out | grep -vE '100\.0%' | grep -v '^total:'; then
             echo "coverage below 100%"; exit 1
           fi
+  # Bomb tests assert a refusal or a tiny allocation. They run as a compiled
+  # binary under GOMEMLIMIT and a virtual memory limit, so that a regression
+  # fails by itself instead of allocating gigabytes of the runner.
+  bombs:
+    name: bombs (ulimit -v, GOMEMLIMIT)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.3' }
+      - run: go test -c -o rpm.test .
+      - name: run under limits
+        run: |
+          ulimit -v 2097152
+          GOMEMLIMIT=256MiB ./rpm.test -test.run 'Bomb|Ceiling' -test.v
   emulated:
     runs-on: ubuntu-latest
     strategy:
