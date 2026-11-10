@@ -2,9 +2,9 @@ github.com/go-compressions/xz v0.3.1 h1:z4U2wNrV71pgUvxkSlBuoZc7JCJ7d+Tb3tSjyMeG
 github.com/go-compressions/xz v0.3.1/go.mod h1:ZbYM2CbKR8SZzq6rqhqlWFnBaXrNhWwQyTSslnYQ0FU=
 github.com/go-filesystems/cpio v0.8.0 h1:uGS2k0mcTB/k3fqRvF7BRDhueWbwke681fB33cBHQD0=
 github.com/go-filesystems/cpio v0.8.0/go.mod h1:dATw/mUHpi1+nmPFhj3pzEUp5KJ36NN4wGR06Cc9fSE=
-github.com/go-filesystems/interface v0.5.0 h1:AsbSXYG5cp497Ki0Ez88s8wwrVEmeRmFLd40T4d3UwA=
-github.com/go-filesystems/interface v0.5.0/go.mod h1:u9v8mvapNV8djzObwCECdyd2g6JBU6HNTR4EAqxOn6U=
-github.com/klauspost/compress v1.20.3 h1:zWNoFqq/lSuYQRim3dUXlXeA0IqwuZGicdG5ZTfY5j4=
-github.com/klauspost/compress v1.20.3/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+github.com/go-filesystems/interface v0.6.0 h1:+7nA5FHgs/B03rZ9p81bkm0+6ew9fEntTFK8L5Uu6pk=
+github.com/go-filesystems/interface v0.6.0/go.mod h1:u9v8mvapNV8djzObwCECdyd2g6JBU6HNTR4EAqxOn6U=
+github.com/klauspost/compress v1.20.4 h1:dD0v/bvxtjCBqQu6sx1TNWkalEY5lNTIe+HY9w8TeNI=
+github.com/klauspost/compress v1.20.4/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/ulikunitz/xz v0.5.17 h1:flR0y/x1hgM8EGV1AW3Xll6T413G0glV8UfBwR617V4=
 github.com/ulikunitz/xz v0.5.17/go.mod h1:H9Rt/W6/Qj27PGauhQc6nfCDy7vHpzsOThBSaYDoEhw=
