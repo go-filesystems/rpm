@@ -1,6 +1,6 @@
 module github.com/go-filesystems/rpm
 
-go 1.27.1
+go 1.27.4
 
 require (
 	github.com/go-compressions/xz v0.3.1
